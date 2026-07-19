@@ -26,9 +26,7 @@ def orthogonal_procrustes(A, B):
     Find orthogonal matrix Q that minimizes ||B - QA||_F
     Used for E3 Plan Transfer
     """
-    # A, B shape: (n_samples, d)
-    # Want Q s.t. B ~ A @ Q.T  => Q @ A.T ~ B.T
-    # M = B^T A
+
     M = np.dot(B.T, A)
     U, _, Vt = np.linalg.svd(M)
     Q = np.dot(U, Vt)
