@@ -77,16 +77,22 @@ def prepare_batches_block(data, k, rng):
     actions = data['actions']
     next_states = data['next_states']
     num_trajs, traj_length, d = states.shape
+    d_action = actions.shape[-1]
+    n_windows = traj_length - k + 1
 
-    X_state, X_action, Y_target = [], [], []
-    for t in range(traj_length - k + 1):
-        X_state.append(states[:, t, :])
-        X_action.append(actions[:, t:t + k, :])
-        Y_target.append(next_states[:, t:t + k, :])
+    # Build with an explicit (traj, window, ...) leading shape for all three
+    # arrays and flatten them with the SAME reshape, so state/action/target
+    # stay paired to the same physical transition after flattening + shuffle.
+    # (A previous version concatenated X_state along axis=0 (t-major) while
+    # stacking X_action/Y_target along axis=1 (traj-major) — different flatten
+    # orders silently scrambled the (state, action, target) pairing.)
+    X_state = np.stack([states[:, t, :] for t in range(n_windows)], axis=1)
+    X_action = np.stack([actions[:, t:t + k, :] for t in range(n_windows)], axis=1)
+    Y_target = np.stack([next_states[:, t:t + k, :] for t in range(n_windows)], axis=1)
 
-    X_state = np.concatenate(X_state, axis=0)
-    X_action = np.stack(X_action, axis=1).reshape(-1, k, actions.shape[-1])
-    Y_target = np.stack(Y_target, axis=1).reshape(-1, k, d)
+    X_state = X_state.reshape(-1, d)
+    X_action = X_action.reshape(-1, k, d_action)
+    Y_target = Y_target.reshape(-1, k, d)
 
     indices = rng.permutation(len(X_state))
     return {
@@ -191,6 +197,8 @@ def main():
             )
 
             state_std = np.std(train_data['states'])
+            traj_len_used = train_data['states'].shape[1]
+            print(f"traj_length used: {traj_len_used}, max |state| in train: {np.max(np.abs(train_data['states'])):.3f}")
 
             with open(f"outputs/checkpoints/e1/test_data_L{L}_seed{seed}.pkl", "wb") as f:
                 pickle.dump({

@@ -49,6 +49,7 @@ def generate_linear_dataset(
     noise_std: float = 0.01,
     test_noise_std: float = 1e-3,
     spectrum_low_mult: float = 0.9,
+    max_growth_factor: float = 50.0,
 ):
     """
     Generates a dataset of trajectories for the linear system.
@@ -63,7 +64,19 @@ def generate_linear_dataset(
     realization. `test_noise_std=0.0` gives a fully deterministic test
     rollout (oracle error exactly 0); a small nonzero value keeps a
     well-defined, non-degenerate noise floor for h*(tau) (see eval_toy.py).
+
+    For expansive systems (target_L > 1), a fixed `traj_length` (e.g. 100)
+    lets the state grow ~target_L**traj_length, which overflows to huge
+    magnitudes (e.g. 1.2**100 ~ 8e7) well before training even starts,
+    producing exploding MSE/gradients for every model, not just the block
+    predictors. `traj_length` is therefore capped so state magnitude grows
+    by at most `max_growth_factor` over a trajectory (spec §5.3.4 applies
+    this idea at eval time; it must also apply at data-generation time).
     """
+    if target_L > 1.0:
+        growth_cap = int(np.log(max_growth_factor) / np.log(target_L))
+        traj_length = max(10, min(traj_length, growth_cap))
+
     env = LinearSystemEnv(
         d=d, target_L=target_L, noise_std=noise_std, seed=seed,
         spectrum_low_mult=spectrum_low_mult,
