@@ -45,6 +45,17 @@ class Dynamics(nn.Module):
         z_next = nn.Dense(self.latent_dim)(x)
         return z_next
 
+class RewardPredictor(nn.Module):
+    hidden_dim: int = 256
+    
+    @nn.compact
+    def __call__(self, z, a):
+        x = jnp.concatenate([z, a], axis=-1)
+        x = nn.relu(nn.Dense(self.hidden_dim)(x))
+        x = nn.relu(nn.Dense(self.hidden_dim)(x))
+        r = nn.Dense(1)(x)
+        return r.squeeze(-1)
+
 class WorldModel(nn.Module):
     obs_dim: int
     latent_dim: int = 32
@@ -53,31 +64,31 @@ class WorldModel(nn.Module):
         self.encoder = Encoder(latent_dim=self.latent_dim)
         self.decoder = Decoder(obs_dim=self.obs_dim)
         self.dynamics = Dynamics(latent_dim=self.latent_dim)
+        self.reward_predictor = RewardPredictor()
         
     def __call__(self, obs, action):
         z = self.encoder(obs)
         z_next_pred = self.dynamics(z, action)
         obs_rec = self.decoder(z)
-        return z, z_next_pred, obs_rec
+        reward_pred = self.reward_predictor(z, action)
+        return z, z_next_pred, obs_rec, reward_pred
 
 def collect_random_dataset(env, num_samples: int = 10000):
     """Collects transitions using a random policy"""
-    states, actions, next_states = [], [], []
+    states, actions, next_states, rewards = [], [], [], []
     s = env.reset()
-    # Assume 1D action space for simplicity of DMC toy
-    # Let's get action spec
     from dm_env import specs
     action_spec = env.env.action_spec()
     action_dim = action_spec.shape[0]
     
     for _ in range(num_samples):
-        # sample random action between min and max
         a = np.random.uniform(action_spec.minimum, action_spec.maximum, size=action_spec.shape)
-        s_next, _, done, _ = env.step(a)
+        s_next, r, done, _ = env.step(a)
         
         states.append(s)
         actions.append(a)
         next_states.append(s_next)
+        rewards.append(r)
         
         s = s_next
         if done:
@@ -86,17 +97,17 @@ def collect_random_dataset(env, num_samples: int = 10000):
     return {
         'states': np.array(states),
         'actions': np.array(actions),
-        'next_states': np.array(next_states)
+        'next_states': np.array(next_states),
+        'rewards': np.array(rewards)
     }
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='walker-walk')
-    parser.add_argument('--reg', type=str, default='jepa') # full_rec, light_rec, vicreg, light_vicreg, jepa
+    parser.add_argument('--reg', type=str, default='sigreg') # full_rec, light_rec, vicreg, light_vicreg, sigreg
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
     
-    # Generate data
     print(f"Collecting data for {args.env} (seed={args.seed})...")
     env = make_dmc_env(*args.env.split("-"), mode="train", seed=args.seed)
     train_data = collect_random_dataset(env, num_samples=20000)
@@ -117,11 +128,14 @@ def main():
     @jax.jit
     def train_step(state, batch, rng_key):
         def loss_fn(params):
-            z, z_next_pred, obs_rec = state.apply_fn({'params': params}, batch['states'], batch['actions'])
+            z, z_next_pred, obs_rec, reward_pred = state.apply_fn({'params': params}, batch['states'], batch['actions'])
             z_next_target = state.apply_fn({'params': params}, batch['next_states'], batch['actions'], method=lambda m, s, a: m.encoder(s))
             
             # Latent prediction loss
             pred_loss = jnp.mean((z_next_pred - jax.lax.stop_gradient(z_next_target)) ** 2)
+            
+            # Reward prediction loss
+            reward_loss = jnp.mean((reward_pred - batch['rewards']) ** 2)
             
             # Regularizer loss
             reg_loss = 0.0
@@ -133,15 +147,15 @@ def main():
                 reg_loss = vicreg_loss(z, var_weight=25.0, cov_weight=1.0)
             elif args.reg == 'light_vicreg':
                 reg_loss = vicreg_loss(z, var_weight=6.25, cov_weight=0.25)
-            elif args.reg == 'jepa':
+            elif args.reg == 'sigreg' or args.reg == 'jepa':
                 reg_loss = 1.0 * sigreg_loss(z, rng_key)
                 
-            loss = pred_loss + reg_loss
-            return loss, (pred_loss, reg_loss)
+            loss = pred_loss + reward_loss + reg_loss
+            return loss, (pred_loss, reward_loss, reg_loss)
             
-        (loss, (pred_loss, reg_loss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+        (loss, (pred_loss, reward_loss, reg_loss)), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
         state = state.apply_gradients(grads=grads)
-        return state, loss, pred_loss, reg_loss
+        return state, loss, pred_loss, reward_loss, reg_loss
 
     batch_size = 256
     num_epochs = 100
@@ -153,10 +167,10 @@ def main():
             rng, step_rng = jax.random.split(rng)
             batch_idx = indices[i*batch_size:(i+1)*batch_size]
             batch = {k: v[batch_idx] for k, v in train_data.items()}
-            state, loss, pred_loss, reg_loss = train_step(state, batch, step_rng)
+            state, loss, pred_loss, reward_loss, reg_loss = train_step(state, batch, step_rng)
             
         if epoch % 20 == 0 or epoch == num_epochs - 1:
-            print(f"Epoch {epoch}: Total={loss:.4f} Pred={pred_loss:.4f} Reg={reg_loss:.4f}")
+            print(f"Epoch {epoch}: Total={loss:.4f} Pred={pred_loss:.4f} Rew={reward_loss:.4f} Reg={reg_loss:.4f}")
             
     os.makedirs("outputs/checkpoints/e2", exist_ok=True)
     with open(f"outputs/checkpoints/e2/model_{args.env}_{args.reg}_seed{args.seed}.pkl", "wb") as f:

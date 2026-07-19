@@ -12,8 +12,9 @@ class LinearSystemEnv:
         A_init = self.rng.normal(0, 1, (d, d))
         # Ensure it's somewhat well-conditioned (optional, but good practice)
         U, S, Vt = np.linalg.svd(A_init)
-        # We set all singular values to target_L to ensure uniform expansion/contraction
-        S = np.ones(d) * target_L
+        # We set singular values distributed in [0.5*target_L, target_L] to ensure non-uniform scaling,
+        # but max singular value is exactly target_L
+        S = np.linspace(0.5 * target_L, target_L, d)
         self.A = U @ np.diag(S) @ Vt
         
         # B matrix (d x d for simplicity, or d x a)

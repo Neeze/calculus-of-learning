@@ -7,25 +7,78 @@ import jax.numpy as jnp
 
 from src.envs.dmc_ood import make_dmc_env
 from experiments.e2_frame_freedom.train_e2 import WorldModel, collect_random_dataset
-from src.models.mappings import IdentityMap, OrthogonalProcrustesMap, AffineMap, SemanticAlignmentMap, MLPMap
+from src.models.mappings import IdentityMap, OrthogonalProcrustesMap, AffineMap, SemanticAlignmentMap, MLPMap, RelativeRepMap
 from src.visualization.plotter import plot_trajectory_divergence, save_plot
+import matplotlib.pyplot as plt
+
+def evaluate_actions_in_env(env, physics_state, actions):
+    with env.env.physics.reset_context():
+        env.env.physics.set_state(physics_state)
+    
+    total_reward = 0.0
+    for a in actions:
+        _, r, _, _ = env.step(a)
+        total_reward += r
+    return total_reward
+
+def cem_plan(model, params, z0, action_spec, horizon=50, num_iters=5, pop_size=200, num_elites=20, target_z_seq=None):
+    """
+    If target_z_seq is None, maximizes reward using model.reward_predictor.
+    If target_z_seq is provided, minimizes MSE to it (tracking).
+    """
+    key = jax.random.PRNGKey(42)
+    a_dim = action_spec.shape[0]
+    
+    mu = jnp.zeros((horizon, a_dim))
+    std = jnp.ones((horizon, a_dim)) * (action_spec.maximum - action_spec.minimum) / 4.0
+    
+    @jax.jit
+    def evaluate_trajectory(a_seq):
+        def step(z, a):
+            z_next = model.apply({'params': params}, z, a, method=lambda m, z, a: m.dynamics(z, a))
+            reward = model.apply({'params': params}, z, a, method=lambda m, z, a: m.reward_predictor(z, a))
+            return z_next, (z_next, reward)
+            
+        _, (z_seq, r_seq) = jax.lax.scan(step, z0, a_seq)
+        
+        if target_z_seq is not None:
+            # minimize MSE
+            mse = jnp.mean((z_seq - target_z_seq)**2)
+            return -mse
+        else:
+            return jnp.sum(r_seq)
+            
+    vmap_eval = jax.vmap(evaluate_trajectory)
+    
+    for _ in range(num_iters):
+        key, subkey = jax.random.split(key)
+        a_samples = mu + std * jax.random.normal(subkey, (pop_size, horizon, a_dim))
+        a_samples = jnp.clip(a_samples, action_spec.minimum, action_spec.maximum)
+        
+        scores = vmap_eval(a_samples)
+        
+        elite_idx = jnp.argsort(scores)[-num_elites:]
+        elites = a_samples[elite_idx]
+        
+        mu = jnp.mean(elites, axis=0)
+        std = jnp.std(elites, axis=0)
+        
+    return np.array(mu)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='cartpole-swingup')
+    parser.add_argument('--env', type=str, default='walker-walk')
     args = parser.parse_args()
     
-    seeds = [42, 43] # Models A and B
+    seeds = [42, 43]
     
-    # Load Models A and B
     try:
-        with open(f"outputs/checkpoints/e2/model_{args.env}_jepa_seed{seeds[0]}.pkl", "rb") as f:
+        with open(f"outputs/checkpoints/e2/model_{args.env}_sigreg_seed{seeds[0]}.pkl", "rb") as f:
             params_A = pickle.load(f)
-        with open(f"outputs/checkpoints/e2/model_{args.env}_jepa_seed{seeds[1]}.pkl", "rb") as f:
+        with open(f"outputs/checkpoints/e2/model_{args.env}_sigreg_seed{seeds[1]}.pkl", "rb") as f:
             params_B = pickle.load(f)
     except FileNotFoundError:
-        print("Required checkpoints for E3 not found. Please run E2 training for 'jepa' with seeds 42 and 43 first.")
-        # For toy demonstration purposes, we will exit gracefully.
+        print("Required checkpoints for E3 not found. Please run E2 training for 'sigreg' with seeds 42 and 43 first.")
         return
         
     print("Collecting Anchor dataset...")
@@ -34,6 +87,7 @@ def main():
     
     obs_dim = anchor_data['states'].shape[1]
     model = WorldModel(obs_dim=obs_dim)
+    action_spec = env.env.action_spec()
     
     @jax.jit
     def encode(params, obs):
@@ -45,17 +99,35 @@ def main():
             z_next = model.apply({'params': params}, z_t, a_t, method=lambda m, z, a: m.dynamics(z, a))
             return z_next, z_next
         _, z_seq = jax.lax.scan(scan_fn, z0, actions)
-        return jnp.concatenate([z0[None], z_seq], axis=0)
+        return z_seq
 
     states = jnp.array(anchor_data['states'])
     ZA = np.array(encode(params_A, states))
     ZB = np.array(encode(params_B, states))
+    
+    # --- Sanity Check: Synthetic Rotation ---
+    print("Performing Sanity Check with Synthetic Rotation...")
+    theta = np.pi / 4
+    # Create block diagonal rotation for first 2 dims
+    Q_true = np.eye(ZA.shape[1])
+    Q_true[0:2, 0:2] = [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]]
+    ZB_fake = np.dot(ZA, Q_true)
+    
+    sanity_map = OrthogonalProcrustesMap()
+    sanity_map.fit(ZA, ZB_fake)
+    q_err = np.linalg.norm(sanity_map.Q - Q_true)
+    print(f"Sanity Check (Procrustes Q error): {q_err:.6f}")
+    if q_err < 1e-4:
+        print("-> Sanity Check PASSED!")
+    else:
+        print("-> Sanity Check FAILED!")
     
     # Create mappings
     mappings = {
         'Identity': IdentityMap(),
         'Procrustes': OrthogonalProcrustesMap(),
         'Affine': AffineMap(),
+        'Relative': RelativeRepMap(),
         'Semantic': SemanticAlignmentMap(),
         'MLP': MLPMap(output_dim=ZB.shape[1])
     }
@@ -65,41 +137,77 @@ def main():
         print(f"Fitting {name}...")
         mapping.fit(ZA, ZB)
         
-    # Generate Plan A
-    print("Generating Plan A...")
-    plan_data = collect_random_dataset(env, num_samples=50) # 50 steps horizon
-    plan_obs = jnp.array(plan_data['states'])
-    plan_actions = jnp.array(plan_data['actions'])
+    # Generate Plan A and Baselines
+    print("Generating Plans...")
+    env.reset()
+    start_obs = env.reset()
+    physics_state = env.env.physics.get_state().copy()
+    
+    z_A_0 = encode(params_A, jnp.array([start_obs]))[0]
+    z_B_0 = encode(params_B, jnp.array([start_obs]))[0]
+    
+    horizon = 50
+    # Plan A (using model A)
+    actions_A = cem_plan(model, params_A, z_A_0, action_spec, horizon=horizon)
+    return_A = evaluate_actions_in_env(env, physics_state, actions_A)
+    
+    # Plan B (Upper Bound, using model B directly)
+    actions_B = cem_plan(model, params_B, z_B_0, action_spec, horizon=horizon)
+    return_B = evaluate_actions_in_env(env, physics_state, actions_B)
+    
+    # Random Plan (Lower Bound)
+    actions_rand = np.random.uniform(action_spec.minimum, action_spec.maximum, size=(horizon, action_spec.shape[0]))
+    return_rand = evaluate_actions_in_env(env, physics_state, actions_rand)
+    
+    print(f"Return A: {return_A:.2f}, Return B (Upper): {return_B:.2f}, Return Rand (Lower): {return_rand:.2f}")
     
     # Get ground truth latent plan in A
-    z_plan_A = encode(params_A, plan_obs)
+    z_plan_A = unroll_dynamics(params_A, z_A_0, jnp.array(actions_A))
     
-    results = {}
+    results_div = {}
+    results_return = {}
     
     print("Transferring plan and unrolling in B...")
     for name, mapping in mappings.items():
-        # Map the initial state
-        z_A_0 = np.array(z_plan_A[0])
-        z_B_0_mapped = mapping(z_A_0[None])[0]
+        # Map the latent plan A to space B
+        z_plan_B_target = jnp.array(mapping(np.array(z_plan_A)))
         
-        # Unroll using B's dynamics and A's actions
-        z_B_unrolled = unroll_dynamics(params_B, jnp.array(z_B_0_mapped), plan_actions)
+        # Tracking: find actions in B that track z_plan_B_target
+        actions_mapped = cem_plan(model, params_B, z_B_0, action_spec, horizon=horizon, target_z_seq=z_plan_B_target)
         
-        # Ground truth mapped plan
-        z_plan_A_mapped = mapping(np.array(z_plan_A))
+        # 1. Evaluate Trajectory Divergence (in latent space)
+        z_B_unrolled = np.array(unroll_dynamics(params_B, z_B_0, jnp.array(actions_mapped)))
+        divergence = np.linalg.norm(z_B_unrolled - np.array(z_plan_B_target), axis=-1)
+        results_div[name] = divergence
         
-        # Calculate divergence
-        divergence = np.linalg.norm(np.array(z_B_unrolled[:-1]) - z_plan_A_mapped, axis=-1)
-        results[name] = divergence
+        # 2. Evaluate Return in true env
+        ret = evaluate_actions_in_env(env, physics_state, actions_mapped)
+        results_return[name] = ret
+        
+        # Return Ratio
+        ratio = (ret - return_rand) / (return_B - return_rand + 1e-8)
+        print(f"[{name}] Return: {ret:.2f}, Ratio: {ratio*100:.2f}%")
         
     # Plotting
     os.makedirs("outputs/plots", exist_ok=True)
-    time_steps = np.arange(len(plan_actions))
-    divergences = list(results.values())
-    labels = list(results.keys())
     
-    fig = plot_trajectory_divergence(time_steps, divergences, labels, title=f"Latent Trajectory Divergence ({args.env})")
-    save_plot(fig, f"e3_plan_transfer_{args.env}.png")
+    # Plot divergence
+    time_steps = np.arange(horizon)
+    divergences = list(results_div.values())
+    labels = list(results_div.keys())
+    fig1 = plot_trajectory_divergence(time_steps, divergences, labels, title=f"Latent Trajectory Divergence ({args.env})")
+    save_plot(fig1, f"e3_plan_transfer_div_{args.env}.png")
+    
+    # Plot return ratio
+    fig2, ax = plt.subplots(figsize=(8, 6))
+    ratios = [(results_return[name] - return_rand) / (return_B - return_rand + 1e-8) for name in labels]
+    ax.bar(labels, ratios, color='skyblue')
+    ax.axhline(1.0, color='r', linestyle='--', label='Upper Bound (B self-plan)')
+    ax.axhline(0.0, color='k', linestyle='--', label='Lower Bound (Random)')
+    ax.set_ylabel('Return Ratio')
+    ax.set_title('Plan Transfer Return Ratio')
+    ax.legend()
+    save_plot(fig2, f"e3_plan_transfer_return_{args.env}.png")
     
     print("Evaluation complete. Results plotted.")
 

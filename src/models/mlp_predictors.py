@@ -25,7 +25,7 @@ def create_m1_model(d: int = 8, hidden_dims: Sequence[int] = (256, 384)):
 
 def create_mk_model(d: int = 8, k: int = 4, hidden_dims: Sequence[int] = (256, 384)):
     """
-    Creates Multi-Step Predictor (M2, M3)
-    Outputs: shape (k * d,) which will be reshaped to (k, d) representing \hat{s}_{t+1..t+k}
+    Creates Multi-Step Predictor (M2, M3). 
+    Note: It still predicts ONE step (output_dim=d), but is trained with k-step unrolled loss.
     """
-    return PredictorMLP(features=hidden_dims, output_dim=k * d)
+    return PredictorMLP(features=hidden_dims, output_dim=d)

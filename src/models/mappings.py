@@ -16,16 +16,21 @@ class IdentityMap:
 class OrthogonalProcrustesMap:
     def __init__(self):
         self.Q = None
+        self.mean_A = None
+        self.mean_B = None
         
     def fit(self, ZA, ZB):
-        # Find orthogonal Q that minimizes ||ZB - ZA @ Q||_F
-        # Equivalently, max Tr(Q^T ZA^T ZB)
-        M = np.dot(ZA.T, ZB)
+        self.mean_A = np.mean(ZA, axis=0)
+        self.mean_B = np.mean(ZB, axis=0)
+        ZA_c = ZA - self.mean_A
+        ZB_c = ZB - self.mean_B
+        
+        M = np.dot(ZA_c.T, ZB_c)
         U, _, Vt = np.linalg.svd(M)
         self.Q = np.dot(U, Vt)
         
     def __call__(self, z):
-        return np.dot(z, self.Q)
+        return np.dot(z - self.mean_A, self.Q) + self.mean_B
 
 class AffineMap:
     def __init__(self):
