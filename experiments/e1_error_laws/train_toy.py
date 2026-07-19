@@ -127,8 +127,12 @@ def run_training_loop(
     best_state = None
     best_diff = float('inf')
     best_val = None
+    match_tol = 0.02
+    max_epochs = 600  # hard cap so a stubborn (L, seed) config can't hang forever
 
-    for epoch in range(epochs):
+    epoch = 0
+    total_epochs_budget = epochs
+    while epoch < total_epochs_budget:
         epoch_loss = 0.0
         for i in range(num_batches):
             start_idx = i * batch_size
@@ -161,6 +165,24 @@ def run_training_loop(
 
         if epoch % 30 == 0:
             print(f"Epoch {epoch}, Train Loss: {epoch_loss/num_batches:.4f}, Val E(1): {val_loss_1step:.4f}")
+
+        epoch += 1
+
+        # Adaptive extension: if we're matching to a target_eps (M2/M3) and
+        # haven't hit the ±2% tolerance by the end of the current budget,
+        # keep training in extra chunks (reusing current params, not
+        # resetting) instead of giving up — under-matched block predictors
+        # were previously reported as simply under-trained, not incapable.
+        if (
+            target_eps is not None
+            and epoch == total_epochs_budget
+            and best_diff / target_eps > match_tol
+            and total_epochs_budget < max_epochs
+        ):
+            extension = min(150, max_epochs - total_epochs_budget)
+            total_epochs_budget += extension
+            print(f"-> Not matched within {match_tol*100:.0f}% after {epoch} epochs "
+                  f"(diff {best_diff/target_eps*100:.2f}%). Extending to {total_epochs_budget} epochs.")
 
     if target_eps is not None:
         print(f"Target eps: {target_eps:.6f}, Closest Val E(1) found: {best_val:.6f} (Diff: {best_diff:.6f})")
