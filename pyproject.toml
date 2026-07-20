@@ -20,6 +20,10 @@ dependencies = [
     "flax>=0.10.7",
     "optax>=0.2.8",
     "tensorflow-cpu>=2.21.0",
-    "jax[cuda12]>=0.6.2",
+    # Upper bound is required by DreamerV3 (E1 Tier 1), not by our own code:
+    # embodied/jax/transform.py:56 calls jax.jit() with 5 positional arguments.
+    # JAX 0.6.x deprecated that; JAX >=0.7 makes it a hard TypeError. Keep the
+    # whole project on one JAX so E1/E2 share a single environment.
+    "jax[cuda12]>=0.6.2,<0.7",
     "scikit-learn>=1.7.2",
 ]

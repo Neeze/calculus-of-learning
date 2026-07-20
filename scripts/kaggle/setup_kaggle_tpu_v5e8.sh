@@ -62,8 +62,11 @@ fi
 echo "🧹 Removing CUDA JAX plugins and any stale libtpu..."
 pip uninstall -y -q jax-cuda12-plugin jax-cuda12-pjrt libtpu 2>/dev/null || true
 
+# The <0.7 cap is required by DreamerV3, not by us: embodied/jax/transform.py:56
+# calls jax.jit() with 5 positional args. JAX 0.6.x only warns; JAX >=0.7 raises
+# "TypeError: jit() takes from 0 to 1 positional arguments but 5 were given".
 echo "🔥 Installing jax[tpu] (pulls a matching libtpu)..."
-uv pip install --system -U "jax[tpu]"
+uv pip install --system -U "jax[tpu]>=0.6.2,<0.7"
 
 # 6. Environment variables
 export MUJOCO_GL="osmesa"

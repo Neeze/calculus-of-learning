@@ -52,7 +52,7 @@ fi
 # drift apart (a stale libtpu segfaults at jax.devices()).
 echo "🔥 Installing JAX for TPU..."
 uv pip uninstall --system jax-cuda12-plugin jax-cuda12-pjrt libtpu 2>/dev/null || true
-uv pip install --system -U "jax[tpu]"
+uv pip install --system -U "jax[tpu]>=0.6.2,<0.7"
 
 # 6. Environment variables
 export MUJOCO_GL="osmesa"

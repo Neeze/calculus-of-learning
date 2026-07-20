@@ -68,7 +68,7 @@ fi
 # 6. JAX with CUDA 12 support — must be last install step, since dreamerv3's
 # requirements can otherwise downgrade/replace it.
 echo "🔥 Installing JAX with CUDA 12 support..."
-uv pip install --system -U "jax[cuda12]" flax optax
+uv pip install --system -U "jax[cuda12]>=0.6.2,<0.7" flax optax
 
 # 7. Environment variables
 export MUJOCO_GL="egl"
