@@ -73,17 +73,35 @@ Spec: `docs/E1-Tier1-DreamerV3-spec.md`. Giai đoạn A (train 3 task × 5 seeds
 
 ### Cell 5a — Train một run (~1–2h TPU v5e / A10; tự resume nếu đứt phiên)
 
+> `--logdir` dùng `$(pwd)/../../outputs/...` (đường dẫn tuyệt đối), **không** dùng
+> `../../outputs/...` trần — thư viện `elements` (vendor trong DreamerV3) có bug
+> tự cắt bớt một cấp `..` ở đầu path tương đối (`../../foo` → `./../foo`), gây
+> `FileNotFoundError` khi ghi `config.yaml`. Path tuyệt đối không bị bug này.
+
+> **Bắt buộc `export MUJOCO_GL` ngay trong cell `%%bash`.** DreamerV3
+> (`embodied/envs/dmc.py:23`) mặc định set `MUJOCO_GL=egl` nếu biến chưa có —
+> trên runtime TPU **không có GPU**, EGL không tìm được device, MuJoCo rơi về
+> GLFW, đụng `DISPLAY` không tồn tại và **segfault**. Set trong cell Python
+> (`os.environ`) là không đủ chắc chắn; export thẳng trong cell bash mới ăn chắc.
+
 ```bash
 %%bash
+export MUJOCO_GL=osmesa      # GPU runtime: egl
+export JAX_PLATFORMS=tpu     # GPU runtime: bỏ dòng này
 cd third_party/dreamerv3
 python dreamerv3/main.py \
-  --logdir ../../outputs/dreamer/dmc_walker_walk/seed0 \
+  --logdir $(pwd)/../../outputs/dreamer/dmc_walker_walk/seed0 \
   --configs dmc_proprio \
   --task dmc_walker_walk \
   --seed 0 \
   --run.steps 5e5 \
+  --run.envs 8 \
   --jax.platform tpu   # GPU runtime: bỏ dòng này
 ```
+
+> `--run.envs 8`: preset `dmc_proprio` kế thừa mặc định `run.envs: 16` — 16
+> process MuJoCo song song cho một run, thường quá tải CPU của runtime Colab và
+> gây segfault. Giảm còn 8 (hoặc 4 nếu vẫn crash); kiểm số core bằng `!nproc`.
 
 ### Cell 5b — Đo fps trước khi cam kết cả sweep (10–15 phút)
 
@@ -94,13 +112,17 @@ tổng thời gian 1 run ≈ `500000 / fps` giây. Nhân 15 runs để lên kế
 
 ```bash
 %%bash
+export MUJOCO_GL=osmesa      # GPU runtime: egl
+export JAX_PLATFORMS=tpu     # GPU runtime: bỏ dòng này
+OUT=$(pwd)/outputs/dreamer
+mkdir -p $OUT
 cd third_party/dreamerv3
 TASK=dmc_walker_walk    # đổi: dmc_cartpole_swingup, dmc_cheetah_run
 for SEED in 0 1 2 3 4; do
   python dreamerv3/main.py \
-    --logdir ../../outputs/dreamer/${TASK}/seed${SEED} \
+    --logdir $OUT/${TASK}/seed${SEED} \
     --configs dmc_proprio --task ${TASK} \
-    --seed ${SEED} --run.steps 5e5 \
+    --seed ${SEED} --run.steps 5e5 --run.envs 8 \
     --jax.platform tpu   # GPU runtime: bỏ dòng này
 done
 ```

@@ -55,8 +55,12 @@ if [ ! -f "third_party/dreamerv3/requirements.txt" ]; then
 fi
 
 if [ -f "third_party/dreamerv3/requirements.txt" ]; then
-    echo "🤖 Installing DreamerV3 requirements..."
-    uv pip install --system -r third_party/dreamerv3/requirements.txt
+    echo "🤖 Installing DreamerV3 requirements (excluding its jax pin)..."
+    # DreamerV3 pins `jax[cuda12]==0.4.33`, which would downgrade JAX and leave
+    # mismatched jax/jaxlib/plugin versions. Strip it; step 6 owns JAX.
+    grep -v -E '^\s*jax(\[|=|>|<|\s|$)' third_party/dreamerv3/requirements.txt \
+        > /tmp/dreamerv3-reqs-nojax.txt
+    uv pip install --system -r /tmp/dreamerv3-reqs-nojax.txt
 else
     echo "⚠️ third_party/dreamerv3 still missing after init attempt — E1 Tier 1 (DreamerV3) will be unavailable."
 fi

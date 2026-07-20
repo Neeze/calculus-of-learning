@@ -43,24 +43,27 @@ if [ ! -f "third_party/dreamerv3/requirements.txt" ]; then
 fi
 
 if [ -f "third_party/dreamerv3/requirements.txt" ]; then
-    echo "🤖 Installing DreamerV3 requirements..."
-    uv pip install --system -r third_party/dreamerv3/requirements.txt
+    echo "🤖 Installing DreamerV3 requirements (excluding its jax pin)..."
+    # DreamerV3 pins `jax[cuda12]==0.4.33`. On TPU that pin is actively harmful:
+    # it drags in jax-cuda12-* 0.4.33 and leaves a stale libtpu 0.0.44 behind,
+    # which then mismatches the jaxlib we install below and SEGFAULTS at the
+    # first jax.devices() call. Strip the jax line and let step 5 own JAX.
+    grep -v -E '^\s*jax(\[|=|>|<|\s|$)' third_party/dreamerv3/requirements.txt \
+        > /tmp/dreamerv3-reqs-nojax.txt
+    uv pip install --system -r /tmp/dreamerv3-reqs-nojax.txt
 else
     echo "⚠️ third_party/dreamerv3 still missing after init attempt — E1 Tier 1 (DreamerV3) will be unavailable."
 fi
 
-# 5. JAX for TPU. Kaggle's TPU VM image usually ships a working jax+libtpu
-# already wired to the TPU runtime; only force-reinstall if the pre-shipped
-# one doesn't see the TPU, since reinstalling can desync from the host's
-# libtpu version and break it.
-echo "🔥 Checking JAX/TPU..."
-if python -c "import jax; assert any('tpu' in d.platform.lower() for d in jax.devices())" 2>/dev/null; then
-    echo "✅ Pre-installed JAX already sees the TPU — leaving it as is."
-else
-    echo "Pre-installed JAX does not see the TPU, installing jax[tpu]..."
-    uv pip install --system -U "jax[tpu]" \
-        -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-fi
+# 5. JAX for TPU. Install unconditionally and as the LAST step, so jax, jaxlib
+# and libtpu all come from one resolution and cannot drift apart. Any CUDA jax
+# plugin left over from the base image is removed first — on TPU it is unused,
+# and a version-mismatched one both spams warnings and risks loader conflicts.
+echo "🧹 Removing CUDA JAX plugins and any stale libtpu..."
+pip uninstall -y -q jax-cuda12-plugin jax-cuda12-pjrt libtpu 2>/dev/null || true
+
+echo "🔥 Installing jax[tpu] (pulls a matching libtpu)..."
+uv pip install --system -U "jax[tpu]"
 
 # 6. Environment variables
 export MUJOCO_GL="osmesa"

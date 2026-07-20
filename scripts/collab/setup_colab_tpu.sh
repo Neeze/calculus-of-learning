@@ -35,15 +35,23 @@ if [ ! -f "third_party/dreamerv3/requirements.txt" ]; then
 fi
 
 if [ -f "third_party/dreamerv3/requirements.txt" ]; then
-    echo "🤖 Installing DreamerV3 requirements..."
-    uv pip install --system -r third_party/dreamerv3/requirements.txt
+    echo "🤖 Installing DreamerV3 requirements (excluding its jax pin)..."
+    # DreamerV3 pins `jax[cuda12]==0.4.33`. On TPU that pin is actively harmful:
+    # it drags in jax-cuda12-* 0.4.33 and leaves a stale libtpu behind, which
+    # then mismatches the jaxlib installed below and SEGFAULTS at the first
+    # jax.devices() call. Strip the jax line and let step 5 own JAX.
+    grep -v -E '^\s*jax(\[|=|>|<|\s|$)' third_party/dreamerv3/requirements.txt \
+        > /tmp/dreamerv3-reqs-nojax.txt
+    uv pip install --system -r /tmp/dreamerv3-reqs-nojax.txt
 else
     echo "⚠️ third_party/dreamerv3 still missing after init attempt — E1 Tier 1 (DreamerV3) will be unavailable."
 fi
 
-# 5. Replace CUDA jax (pulled by pyproject) with TPU jax — MUST be last install step
+# 5. Replace CUDA jax (pulled by pyproject) with TPU jax — MUST be last install
+# step, so jax, jaxlib and libtpu all come from a single resolution and cannot
+# drift apart (a stale libtpu segfaults at jax.devices()).
 echo "🔥 Installing JAX for TPU..."
-uv pip uninstall --system jax-cuda12-plugin jax-cuda12-pjrt 2>/dev/null || true
+uv pip uninstall --system jax-cuda12-plugin jax-cuda12-pjrt libtpu 2>/dev/null || true
 uv pip install --system -U "jax[tpu]"
 
 # 6. Environment variables
