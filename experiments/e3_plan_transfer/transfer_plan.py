@@ -6,7 +6,8 @@ import jax
 import jax.numpy as jnp
 
 from src.envs.dmc_ood import make_dmc_env
-from experiments.e2_frame_freedom.train_e2 import WorldModel, collect_random_dataset
+from experiments.e2_frame_freedom.train_e2 import WorldModel
+from experiments.e2_frame_freedom.collect_e2 import collect_random_dataset
 from src.models.mappings import IdentityMap, OrthogonalProcrustesMap, AffineMap, SemanticAlignmentMap, MLPMap, RelativeRepMap
 from src.visualization.plotter import plot_trajectory_divergence, save_plot
 import matplotlib.pyplot as plt

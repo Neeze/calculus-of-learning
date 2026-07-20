@@ -1,28 +1,37 @@
 #!/bin/bash
-# scripts/collab/setup_colab.sh
-# Setup environment for Calculus of Learning on Google Colab GPU (T4/L4/A100)
+# scripts/kaggle/setup_kaggle_rtx6000.sh
+# Setup environment for Calculus of Learning on Kaggle GPU RTX 6000 (single,
+# large-VRAM workstation GPU — 48GB class).
+#
+# Prereqs (Kaggle notebook settings, right sidebar):
+#   - Accelerator: GPU RTX 6000 (or whichever single large-VRAM GPU is listed
+#     under your Kaggle account — this script is CUDA-generic, not tied to
+#     one specific SKU name)
+#   - Internet: ON (required for pip/git — off by default on Kaggle)
 
 set -e
 
 echo "========================================================="
-echo "🚀 Colab GPU Environment Setup for Calculus of Learning"
+echo "🚀 Kaggle GPU RTX 6000 Environment Setup for Calculus of Learning"
 echo "========================================================="
+
+SUDO=""
+[ "$(id -u)" -ne 0 ] && command -v sudo &> /dev/null && SUDO="sudo"
 
 # 1. Check GPU status
 echo "🔍 Checking GPU availability..."
 if command -v nvidia-smi &> /dev/null; then
-    nvidia-smi
+    nvidia-smi --query-gpu=index,name,memory.total --format=csv
 else
-    echo "⚠️ WARNING: No GPU detected. Change Colab runtime type to T4/L4/A100,"
-    echo "   or use scripts/collab/setup_colab_tpu.sh on a TPU runtime."
+    echo "⚠️ WARNING: No GPU detected via nvidia-smi. Check the accelerator"
+    echo "   setting in the notebook sidebar."
 fi
 
-# 2. System dependencies for headless rendering (package names vary across
-#    Ubuntu versions — try new names first, fall back to old ones)
+# 2. System dependencies for headless rendering
 echo "📦 Installing system dependencies (EGL/OSMesa, FFmpeg)..."
-sudo apt-get update -y
-sudo apt-get install -y ffmpeg libosmesa6-dev patchelf libegl1 libgl1 > /dev/null \
-    || sudo apt-get install -y ffmpeg libosmesa6-dev patchelf libgl1-mesa-glx > /dev/null
+$SUDO apt-get update -y -q
+$SUDO apt-get install -y -q ffmpeg libosmesa6-dev patchelf libegl1 libgl1 > /dev/null \
+    || $SUDO apt-get install -y -q ffmpeg libosmesa6-dev patchelf libgl1-mesa-glx > /dev/null
 
 # 3. uv for fast dependency management
 echo "⚡ Installing uv..."
@@ -33,8 +42,7 @@ export UV_SYSTEM_PYTHON=1
 echo "🐍 Installing project dependencies..."
 uv pip install --system -e .
 
-# 5. DreamerV3 submodule (E1 Tier 1) — init it here so the script is
-# self-sufficient regardless of what the notebook cells did.
+# 5. DreamerV3 requirements (E1 Tier 1)
 echo "🔗 Initializing third_party/dreamerv3 submodule..."
 if [ ! -f "third_party/dreamerv3/requirements.txt" ]; then
     if [ -d ".git" ] && [ -f ".gitmodules" ]; then
@@ -53,8 +61,8 @@ else
     echo "⚠️ third_party/dreamerv3 still missing after init attempt — E1 Tier 1 (DreamerV3) will be unavailable."
 fi
 
-# 6. Ensure CUDA jax wins — MUST be last install step (dreamerv3 requirements
-#    may have downgraded or replaced it)
+# 6. JAX with CUDA 12 support — must be last install step, since dreamerv3's
+# requirements can otherwise downgrade/replace it.
 echo "🔥 Installing JAX with CUDA 12 support..."
 uv pip install --system -U "jax[cuda12]" flax optax
 
@@ -69,8 +77,14 @@ import jax
 print(f'JAX Version: {jax.__version__}')
 devices = jax.devices()
 print(f'JAX Devices: {devices}')
-assert any(d.platform == 'gpu' for d in devices), 'GPU not detected by JAX!'
+assert any(d.platform == 'gpu' for d in devices), 'No GPU detected by JAX!'
 print('✅ JAX successfully detected GPU.')
+for d in devices:
+    if d.platform == 'gpu':
+        stats = d.memory_stats() or {}
+        limit = stats.get('bytes_limit')
+        if limit:
+            print(f'   {d}: ~{limit / 1e9:.1f} GB visible to JAX')
 
 from dm_control import suite
 env = suite.load('cartpole', 'swingup')
@@ -88,7 +102,11 @@ except Exception as e:
 "
 
 echo "========================================================="
-echo "🎉 GPU Setup Completed!"
+echo "🎉 Kaggle GPU RTX 6000 Setup Completed!"
 echo "NOTE: set this in every notebook cell that runs experiments:"
 echo "  %env MUJOCO_GL=egl"
+echo ""
+echo "Single large-VRAM GPU: no parallel-seed sharding needed — a run's"
+echo "batch_size can be raised (e.g. --batch_size 32) to use the extra"
+echo "headroom instead. See scripts/kaggle/README.md."
 echo "========================================================="
